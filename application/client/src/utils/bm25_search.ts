@@ -1,6 +1,38 @@
 import { BM25 } from "bayesian-bm25";
 import type { Tokenizer, IpadicFeatures } from "kuromoji";
 
+export interface BM25Index {
+  bm25: BM25;
+  candidates: string[];
+}
+
+/**
+ * 候補リストを一度だけインデックス化してキャッシュできる形で返す
+ */
+export function createBM25Index(
+  tokenizer: Tokenizer<IpadicFeatures>,
+  candidates: string[],
+): BM25Index {
+  const bm25 = new BM25({ k1: 1.2, b: 0.75 });
+  const tokenizedCandidates = candidates.map((c) => extractTokens(tokenizer.tokenize(c)));
+  bm25.index(tokenizedCandidates);
+  return { bm25, candidates };
+}
+
+/**
+ * キャッシュ済みインデックスを使ってBM25検索を実行（インデックス再構築なし）
+ */
+export function searchBM25(index: BM25Index, queryTokens: string[]): string[] {
+  if (queryTokens.length === 0) return [];
+  const scores = index.bm25.getScores(queryTokens);
+  return index.candidates
+    .map((text, i) => ({ text, score: scores[i] ?? 0 }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => a.score - b.score)
+    .slice(-10)
+    .map((s) => s.text);
+}
+
 const STOP_POS = new Set(["助詞", "助動詞", "記号"]);
 
 /**

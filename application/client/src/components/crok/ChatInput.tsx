@@ -11,8 +11,10 @@ import {
 
 import { FontAwesomeIcon } from "@web-speed-hackathon-2026/client/src/components/foundation/FontAwesomeIcon";
 import {
+  BM25Index,
+  createBM25Index,
   extractTokens,
-  filterSuggestionsBM25,
+  searchBM25,
 } from "@web-speed-hackathon-2026/client/src/utils/bm25_search";
 import { fetchJSON } from "@web-speed-hackathon-2026/client/src/utils/fetchers";
 
@@ -79,6 +81,8 @@ export const ChatInput = ({ isStreaming, onSendMessage }: Props) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const [tokenizer, setTokenizer] = useState<Tokenizer<IpadicFeatures> | null>(null);
+  const bm25IndexRef = useRef<BM25Index | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [queryTokens, setQueryTokens] = useState<string[]>([]);
@@ -114,40 +118,39 @@ export const ChatInput = ({ isStreaming, onSendMessage }: Props) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // トークナイザー準備完了時に候補を一度だけ取得してBM25インデックスを構築
   useEffect(() => {
+    if (!tokenizer) return;
     let cancelled = false;
-
-    const updateSuggestions = async () => {
-      if (!tokenizer || !inputValue.trim()) {
-        setSuggestions([]);
-        setQueryTokens([]);
-        setShowSuggestions(false);
-        return;
+    fetchJSON<{ suggestions: string[] }>("/api/v1/crok/suggestions").then(({ suggestions: candidates }) => {
+      if (!cancelled) {
+        bm25IndexRef.current = createBM25Index(tokenizer, candidates);
       }
+    });
+    return () => { cancelled = true; };
+  }, [tokenizer]);
 
-      const { suggestions: candidates } = await fetchJSON<{ suggestions: string[] }>(
-        "/api/v1/crok/suggestions",
-      );
-      if (cancelled) {
-        return;
-      }
+  // 入力変化時はデバウンスしてBM25検索（インデックス再構築なし）
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
 
+    if (!tokenizer || !inputValue.trim() || !bm25IndexRef.current) {
+      setSuggestions([]);
+      setQueryTokens([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    debounceRef.current = setTimeout(() => {
       const tokens = extractTokens(tokenizer.tokenize(inputValue));
-      const results = filterSuggestionsBM25(tokenizer, candidates, tokens);
-
-      if (cancelled) {
-        return;
-      }
-
+      const results = searchBM25(bm25IndexRef.current!, tokens);
       setQueryTokens(tokens);
       setSuggestions(results);
       setShowSuggestions(results.length > 0);
-    };
-
-    void updateSuggestions();
+    }, 200);
 
     return () => {
-      cancelled = true;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [inputValue, tokenizer]);
 
